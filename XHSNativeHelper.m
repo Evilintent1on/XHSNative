@@ -292,7 +292,8 @@ static id switchRow(NSString *title, BOOL on, NSString *identity) {
 }
 
 static NSDictionary<NSString *, NSString *> *tabTitles(void) {
-    return @{@"index": @"首页", @"shopping": @"市集", @"message": @"消息", @"me": @"我"};
+    NSString *me = [XHSNativeConfig.shared boolForKey:kXHSNativeMeTitle] ? @"我的" : @"我";
+    return @{@"index": @"首页", @"shopping": @"市集", @"message": @"消息", @"me": me};
 }
 
 static NSArray<NSArray *> *glassBars(void) {
@@ -448,7 +449,7 @@ static NSArray<NSArray *> *glassBars(void) {
         NSUInteger index = [config.pageNames indexOfObject:name];
         if (index == NSNotFound || [config isTabHidden:name]) continue;
         UIViewController *page = config.pages[index];
-        UITab *tab = [[UITab alloc] initWithTitle:@"" image:[self tabIcon:name selected:NO] identifier:name viewControllerProvider:^UIViewController *(UITab *t) { return page; }];
+        UITab *tab = [[UITab alloc] initWithTitle:([config boolForKey:kXHSNativeTabTitles] ? (tabTitles()[name] ?: @"") : @"") image:[self tabIcon:name selected:NO] identifier:name viewControllerProvider:^UIViewController *(UITab *t) { return page; }];
         if ([tab respondsToSelector:@selector(setSelectedImage:)]) [(id)tab setSelectedImage:[self tabIcon:name selected:YES]];
         NSUInteger badgeIndex = [legacyNames indexOfObject:name];
         tab.badgeValue = (legacyNames && badgeIndex != NSNotFound) ? controller.badgeValueDict[@(badgeIndex)] : [self tabNamed:name].badgeValue;
@@ -657,6 +658,17 @@ static char kBarEdgeKey, kSoftEdgeKey, kPublishKey, kSegmentGlassKey;
     NSMutableArray *visible = [NSMutableArray array];
     for (id child in children)
         if (![child respondsToSelector:@selector(childVCPageName)] || ![config isChannelHidden:[child childVCPageName]]) [visible addObject:child];
+    // fork 追加：再按用户排的频道顺序重排（标题、分页、下标都从这份数据取，排这里全体一致）
+    NSArray<NSNumber *> *order = config.channelOrder;
+    [visible sortUsingComparator:^NSComparisonResult(id a, id b) {
+        NSUInteger pa = [a respondsToSelector:@selector(childVCPageName)] ? [a childVCPageName] : NSUIntegerMax;
+        NSUInteger pb = [b respondsToSelector:@selector(childVCPageName)] ? [b childVCPageName] : NSUIntegerMax;
+        NSUInteger ia = pa == NSUIntegerMax ? NSUIntegerMax : [order indexOfObject:@(pa)];
+        NSUInteger ib = pb == NSUIntegerMax ? NSUIntegerMax : [order indexOfObject:@(pb)];
+        if (ia == NSNotFound) ia = NSUIntegerMax - 1;
+        if (ib == NSNotFound) ib = NSUIntegerMax - 1;
+        return ia < ib ? NSOrderedAscending : (ia > ib ? NSOrderedDescending : NSOrderedSame);
+    }];
     return visible.count ? visible : children;
 }
 
@@ -665,6 +677,141 @@ static char kBarEdgeKey, kSoftEdgeKey, kPublishKey, kSegmentGlassKey;
     if (![XHSNativeConfig.shared isChannelHidden:page]) return page;
     id first = [[home dataSource] childViewModels].firstObject;
     return [first respondsToSelector:@selector(childVCPageName)] ? [first childVCPageName] : page;
+}
+
+// 「城市显示为同城」（fork 追加）：城市频道显示的是当前城市名（泰安/北京…），统一改成「同城」。
+// 只改文字不改布局：城市名与「同城」都是两个字、宽度不变；每次顶栏排版后检查，已是「同城」就不重复写。
+static NSString *XHSNTitleOfView(UIView *v) {
+    NSString *t = nil;
+    if ([v isKindOfClass:UILabel.class]) {
+        UILabel *l = (UILabel *)v;
+        t = l.text.length ? l.text : l.attributedText.string;
+    } else if ([v isKindOfClass:UIButton.class]) {
+        UIButton *b = (UIButton *)v;
+        t = [b titleForState:UIControlStateNormal];
+        if (!t.length) t = [b attributedTitleForState:UIControlStateNormal].string;
+    }
+    return t;
+}
+static void XHSNSetTitleOfView(UIView *v, NSString *title) {
+    if ([v isKindOfClass:UILabel.class]) {
+        UILabel *l = (UILabel *)v;
+        NSAttributedString *attr = l.attributedText;
+        if (attr.length) l.attributedText = [[NSAttributedString alloc] initWithString:title attributes:[attr attributesAtIndex:0 effectiveRange:NULL]];
+        else l.text = title;
+    } else if ([v isKindOfClass:UIButton.class]) {
+        UIButton *b = (UIButton *)v;
+        NSAttributedString *attr = [b attributedTitleForState:UIControlStateNormal];
+        if (attr.length) [b setAttributedTitle:[[NSAttributedString alloc] initWithString:title attributes:[attr attributesAtIndex:0 effectiveRange:NULL]] forState:UIControlStateNormal];
+        [b setTitle:title forState:UIControlStateNormal];
+    }
+}
+static void XHSNCollectTitled(UIView *v, NSMutableArray *out) {
+    for (UIView *sub in v.subviews) {
+        BOOL isTitle = [sub isKindOfClass:UILabel.class] || [sub isKindOfClass:UIButton.class];
+        if (isTitle && XHSNTitleOfView(sub).length) {
+            [out addObject:sub];
+            if ([sub isKindOfClass:UIButton.class]) continue;  // 按钮自带的 titleLabel 不重复算
+        }
+        XHSNCollectTitled(sub, out);
+    }
+}
+// 顶栏频道改名（fork 追加）：按标题归类、与排列顺序无关——「发现」改「推荐」（开关 discoverRename），
+// 其余既不是关注/发现/推荐/同城的标题就是城市频道（显示的是城市名），改「同城」（开关 cityRename）。
+// 选中/未选中可能有两份同名拷贝，遍历时逐个都改。标题是富文本存的，读写都走 XHSNTitleOfView/XHSNSetTitleOfView。
+static void XHSNRenameSegmentItems(UIView *segment) {
+    XHSNativeConfig *config = XHSNativeConfig.shared;
+    BOOL cityOn = [config boolForKey:kXHSNativeCityRename];
+    BOOL discoverOn = [config boolForKey:kXHSNativeDiscoverRename];
+    if (!cityOn && !discoverOn) return;
+    NSMutableArray *items = [NSMutableArray array];
+    XHSNCollectTitled(segment, items);
+    for (UIView *v in items) {
+        NSString *t = XHSNTitleOfView(v);
+        if (!t.length) continue;
+        if ([t isEqualToString:@"发现"] || [t isEqualToString:@"推荐"]) {
+            if (discoverOn && ![t isEqualToString:@"推荐"]) XHSNSetTitleOfView(v, @"推荐");
+        } else if (![t isEqualToString:@"关注"] && ![t isEqualToString:@"同城"]) {
+            if (cityOn) XHSNSetTitleOfView(v, @"同城");
+        }
+    }
+}
+
+// 「隐藏频道红线」（fork 追加）：选中频道下面那条红线是分段里的一个小视图——又薄、红色。
+// 每次排版后按这两个特征找它，开关开就藏、关就放出来；认错的风险小（分段里没有别的红色薄条）。
+// 注：1.4.8 试过按位置+图层找的版本，真机闪退，已撤回。1.4.11 按诊断结果修两处：
+// 颜色改走 CGColor 分量；隐藏时机除了分段排版后，再补滚动视图（红线的父级）排版后——它排得比分段晚。
+static BOOL XHSNIsRedColor(UIColor *c) {
+    // 诊断实证（1.4.10）：红线是 24x2 的 UIView，背景色分量 1.00/0.15/0.25。
+    // 第一版用 getRed 读分量没认出来——宽色域颜色那条路读不到，改走 CGColor 分量。
+    if (!c) return NO;
+    CGColorRef cg = c.CGColor;
+    if (!cg || CGColorGetNumberOfComponents(cg) < 3) return NO;
+    const CGFloat *p = CGColorGetComponents(cg);
+    return p[0] > 0.75 && p[1] < 0.45 && p[2] < 0.45;
+}
+static BOOL XHSNIsSegIndicator(UIView *v) {
+    CGSize sz = v.bounds.size;
+    if (sz.height < 1 || sz.height > 6 || sz.width < 8 || sz.width > 120) return NO;
+    if (XHSNIsRedColor(v.backgroundColor)) return YES;
+    if (v.layer.backgroundColor && XHSNIsRedColor([UIColor colorWithCGColor:v.layer.backgroundColor])) return YES;
+    NSString *cls = NSStringFromClass(v.class).lowercaseString;
+    return [cls containsString:@"indicator"] || [cls containsString:@"underline"];
+}
++ (void)hideSegmentLine:(UIView *)segment {
+    if (!segment) return;
+    BOOL on = [XHSNativeConfig.shared boolForKey:kXHSNativeHideSegLine];
+    NSMutableArray *labels = [NSMutableArray array];
+    NSMutableArray *indicators = [NSMutableArray array];
+    BOOL isTop = NO;
+    NSMutableArray *stack = [NSMutableArray arrayWithObject:segment];
+    while (stack.count) {
+        UIView *v = stack.lastObject;
+        [stack removeLastObject];
+        for (UIView *sub in v.subviews) [stack addObject:sub];
+        if (v == segment) continue;
+        if (XHSNIsSegIndicator(v)) [indicators addObject:v];
+        NSString *text = nil;
+        if ([v isKindOfClass:[UILabel class]]) {
+            [labels addObject:v];
+            UILabel *label = (UILabel *)v;
+            text = label.text.length ? label.text : label.attributedText.string;
+        } else if ([v isKindOfClass:[UIButton class]]) {
+            UIButton *button = (UIButton *)v;
+            text = button.currentTitle.length ? button.currentTitle : button.currentAttributedTitle.string;
+        }
+        if ([text isEqualToString:@"发现"] || [text isEqualToString:@"推荐"]) isTop = YES;
+    }
+    for (UIView *v in indicators) if (v.hidden != on) v.hidden = on;
+    // 红线藏掉后字显得偏上（实测字形本来是居中的，属视觉错觉）：开关开着时把顶栏这排字整体下移 1 点找补，
+    // 用 transform 挪，不碰布局、不会累积；关开关时只还原被我们挪过的，还原成原样。
+    CGAffineTransform down = CGAffineTransformMakeTranslation(0, 1);
+    for (UILabel *label in labels) {
+        if (on && isTop) {
+            if (!CGAffineTransformEqualToTransform(label.transform, down)) label.transform = down;
+        } else if (CGAffineTransformEqualToTransform(label.transform, down)) {
+            label.transform = CGAffineTransformIdentity;
+        }
+    }
+}
+
+// 红线挂在分段里的滚动视图下，滚动视图排版比分段本身晚：分段排完时藏了，它排版时又摆出来。
+// 所以滚动视图排完再藏一次。先认父级链上有没有分段控件，只对分段里那个滚动视图动手。
++ (void)hideSegmentLineForScrollView:(UIScrollView *)scroll {
+    if (!scroll || ![XHSNativeConfig.shared boolForKey:kXHSNativeHideSegLine]) return;
+    Class segCls = objc_getClass("XYSegmentControl");
+    if (!segCls) return;
+    UIView *v = scroll.superview;
+    for (int i = 0; i < 3 && v; i++) {
+        if ([v isKindOfClass:segCls]) { [self hideSegmentLine:v]; return; }
+        v = v.superview;
+    }
+}
+
+// 改名必须等分段控件自己排完版再做：在顶栏排版里抢先改，会被它自己的排版按数据改回去（1.4.1 真机教训）。
+// 由 XHSNative.xm 里 XYSegmentControl 的 layoutSubviews 在 %orig 之后调用这里。
++ (void)renameSegmentChannels:(UIView *)segment {
+    if (segment) XHSNRenameSegmentItems(segment);
 }
 
 // 首页左上角的入口由服务器按账号下发：SETTING 侧边栏菜单，DOT 点点，RED_BOX 红包。
@@ -1047,6 +1194,8 @@ static void darken(UIVisualEffectView *glass) {
     for (NSString *name in @[@"me", @"shopping", @"message"])
         [rows addObject:switchRow(tabTitles()[name], ![config isTabHidden:name], [@"tab." stringByAppendingString:name])];
     [rows addObject:switchRow(@"搜索", [config boolForKey:kXHSNativeSearchTab], [@"pref." stringByAppendingString:kXHSNativeSearchTab])];
+    [rows addObject:switchRow(@"底栏显示文字", [config boolForKey:kXHSNativeTabTitles], [@"pref." stringByAppendingString:kXHSNativeTabTitles])];
+    [rows addObject:switchRow(@"我显示为我的", [config boolForKey:kXHSNativeMeTitle], [@"pref." stringByAppendingString:kXHSNativeMeTitle])];
     NSMutableArray<NSString *> *order = [NSMutableArray array];
     for (NSString *name in config.tabOrder) [order addObject:tabTitles()[name]];
     [rows addObject:row(@"arrow", with(rowTitle(@"标签顺序"), @"setTrailing", [order componentsJoinedByString:@" "]), @"order")];
@@ -1061,8 +1210,14 @@ static void darken(UIVisualEffectView *glass) {
     NSArray *channels = @[@"关注", @"发现", @"同城"];
     for (NSUInteger page = 0; page < channels.count; page++)
         [rows addObject:switchRow(channels[page], ![config isChannelHidden:page], [NSString stringWithFormat:@"channel.%lu", (unsigned long)page])];
+    NSMutableArray<NSString *> *channelOrderTitles = [NSMutableArray array];
+    for (NSNumber *page in config.channelOrder) [channelOrderTitles addObject:channels[page.unsignedIntegerValue]];
+    [rows addObject:row(@"arrow", with(rowTitle(@"频道顺序"), @"setTrailing", [channelOrderTitles componentsJoinedByString:@" "]), @"channelOrder")];
     [rows addObject:gap(8)];
     [rows addObject:row(@"label", rowTitle(@"重启小红书后生效。"), @"channels.note")];
+    [rows addObject:switchRow(@"城市显示为同城", [config boolForKey:kXHSNativeCityRename], [@"pref." stringByAppendingString:kXHSNativeCityRename])];
+    [rows addObject:switchRow(@"发现显示为推荐", [config boolForKey:kXHSNativeDiscoverRename], [@"pref." stringByAppendingString:kXHSNativeDiscoverRename])];
+    [rows addObject:switchRow(@"隐藏频道红线", [config boolForKey:kXHSNativeHideSegLine], [@"pref." stringByAppendingString:kXHSNativeHideSegLine])];
     [rows addObject:gap(24)];
 
     [rows addObject:row(@"label", rowTitle(@"功能"), @"features.heading")];
@@ -1101,6 +1256,14 @@ static void darken(UIVisualEffectView *glass) {
     return rows;
 }
 
++ (NSArray *)channelOrderRows {
+    NSMutableArray *rows = [NSMutableArray array];
+    NSArray *names = @[@"关注", @"发现", @"同城"];
+    for (NSNumber *page in XHSNativeConfig.shared.channelOrder)
+        [rows addObject:withFlag(row(@"text", rowTitle(names[page.unsignedIntegerValue]), [NSString stringWithFormat:@"channelOrder.%@", page]), @"setCornerMaskUsesCellBounds", YES)];
+    return rows;
+}
+
 // 选不透明度：0% 是纯玻璃，越大越不透
 + (NSArray *)percentRowsForBar:(NSString *)bar {
     NSInteger current = (NSInteger)[XHSNativeConfig.shared fillForBar:bar];
@@ -1117,6 +1280,7 @@ static void darken(UIVisualEffectView *glass) {
 + (NSString *)titleForMode:(NSString *)mode {
     if (!mode) return @"XHSNative";
     if ([mode isEqualToString:@"order"]) return @"标签顺序";
+    if ([mode isEqualToString:@"channelOrder"]) return @"频道顺序";
     for (NSArray *bar in glassBars())
         if ([bar[1] isEqualToString:mode]) return [bar[0] stringByAppendingString:@"不透明度"];
     return @"XHSNative";
@@ -1151,7 +1315,7 @@ static void darken(UIVisualEffectView *glass) {
 
 + (void)handleTap:(NSString *)identity onPage:(XHSNativeSettingsPage *)page {
     XHSNativeConfig *config = XHSNativeConfig.shared;
-    if ([identity isEqualToString:@"order"] || [identity hasPrefix:@"fill."]) {
+    if ([identity isEqualToString:@"order"] || [identity isEqualToString:@"channelOrder"] || [identity hasPrefix:@"fill."]) {
         XHSNativeSettingsPage *next = [[objc_getClass("XHSNativeSettingsPage") alloc] init];
         next.mode = [identity hasPrefix:@"fill."] ? [identity substringFromIndex:5] : identity;
         [page.navigationController pushViewController:next animated:YES];

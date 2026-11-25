@@ -299,6 +299,16 @@
 
 %end
 
+%hook XYSegmentControl
+
+- (void)layoutSubviews {
+    %orig;
+    [XHSNativeHelper renameSegmentChannels:self];
+    [XHSNativeHelper hideSegmentLine:self];
+}
+
+%end
+
 #pragma mark - 点点
 
 // 点点的入口：首页左上角、首页左滑、笔记里的「问点点」、分享面板。禁用后都按没有点点处理
@@ -381,6 +391,10 @@
 - (void)didMoveToWindow {
     %orig;
     [XHSNativeHelper trackScrollView:self];
+}
+- (void)layoutSubviews {
+    %orig;
+    [XHSNativeHelper hideSegmentLineForScrollView:self];
 }
 %end
 
@@ -579,7 +593,7 @@
     %orig;
     XHSNativeSettingsPage *page = self;
     if (!page.mode) page.tableView.tableFooterView = [XHSNativeHelper settingsFooterWithWidth:CGRectGetWidth(page.tableView.bounds)];
-    if ([page.mode isEqualToString:@"order"]) [page.tableView setEditing:YES animated:NO];
+    if ([page.mode isEqualToString:@"order"] || [page.mode isEqualToString:@"channelOrder"]) [page.tableView setEditing:YES animated:NO];
     [[page navBar] setValue:[XHSNativeHelper titleForMode:page.mode] forKey:@"title"];
 }
 
@@ -590,7 +604,8 @@
 
 %new
 - (BOOL)tableView:(UITableView *)table canMoveRowAtIndexPath:(NSIndexPath *)path {
-    return [((XHSNativeSettingsPage *)self).mode isEqualToString:@"order"];
+    NSString *mode = ((XHSNativeSettingsPage *)self).mode;
+    return [mode isEqualToString:@"order"] || [mode isEqualToString:@"channelOrder"];
 }
 
 %new
@@ -607,6 +622,17 @@
 - (void)tableView:(UITableView *)table moveRowAtIndexPath:(NSIndexPath *)source toIndexPath:(NSIndexPath *)destination {
     if ([source isEqual:destination]) return;
     XHSNativeConfig *config = XHSNativeConfig.shared;
+    if ([((XHSNativeSettingsPage *)self).mode isEqualToString:@"channelOrder"]) {
+        NSMutableArray *order = [config.channelOrder mutableCopy];
+        NSNumber *page = order[source.row];
+        [order removeObjectAtIndex:source.row];
+        [order insertObject:page atIndex:destination.row];
+        config.channelOrder = order;
+        [[(XHSNativeSettingsPage *)self vm] setValue:[XHSNativeHelper channelOrderRows] forKey:@"options"];
+        dispatch_async(dispatch_get_main_queue(), ^{ [table reloadData]; });
+        [XHSNativeHelper applySettings];
+        return;
+    }
     NSMutableArray *order = [config.tabOrder mutableCopy];
     NSString *name = order[source.row];
     [order removeObjectAtIndex:source.row];
@@ -622,7 +648,8 @@
 - (void)reloadRows {
     XHSNativeSettingsPage *page = self;
     NSArray *rows = !page.mode ? [XHSNativeHelper settingsRows]
-                               : ([page.mode isEqualToString:@"order"] ? [XHSNativeHelper orderRows] : [XHSNativeHelper percentRowsForBar:page.mode]);
+                               : ([page.mode isEqualToString:@"order"] ? [XHSNativeHelper orderRows]
+                               : ([page.mode isEqualToString:@"channelOrder"] ? [XHSNativeHelper channelOrderRows] : [XHSNativeHelper percentRowsForBar:page.mode]));
     ((void (*)(id, SEL, id))objc_msgSend)([page vm], NSSelectorFromString(@"reload:"), rows);
 }
 

@@ -12,6 +12,11 @@ NSString *const kXHSNativeSwapPublish = @"XHSNative.swapPublish";
 NSString *const kXHSNativeDoubleTapZoom = @"XHSNative.doubleTapZoom";
 NSString *const kXHSNativeMinimize = @"XHSNative.minimize";
 NSString *const kXHSNativeDisableDots = @"XHSNative.disableDots";
+NSString *const kXHSNativeTabTitles = @"XHSNative.tabTitles";
+NSString *const kXHSNativeCityRename = @"XHSNative.cityRename";
+NSString *const kXHSNativeHideSegLine = @"XHSNative.hideSegLine";
+NSString *const kXHSNativeDiscoverRename = @"XHSNative.discoverRename";
+NSString *const kXHSNativeMeTitle = @"XHSNative.meTitle";
 NSString *const kXHSNativeGlassNote = @"XHSNative.glass.note";
 NSString *const kXHSNativeGlassSearch = @"XHSNative.glass.search";
 NSString *const kXHSNativeGlassComments = @"XHSNative.glass.comments";
@@ -31,6 +36,7 @@ NSString *const kXHSNativeBarProfile = @"profile";
 static NSString *const kTabOrder = @"XHSNative.tabOrder";
 static NSString *const kTabHidden = @"XHSNative.tabHidden";
 static NSString *const kChannelHidden = @"XHSNative.channelHidden";
+static NSString *const kChannelOrder = @"XHSNative.channelOrder";
 static NSString *const kFillPrefix = @"XHSNative.fill.";
 
 @implementation XHSNativeConfig
@@ -79,6 +85,21 @@ static NSString *const kFillPrefix = @"XHSNative.fill.";
 
 - (void)setTabOrder:(NSArray<NSString *> *)order {
     [NSUserDefaults.standardUserDefaults setObject:order forKey:kTabOrder];
+}
+
+// 首页频道顺序（页码 0 关注 / 1 发现 / 2 同城），存的无效或缺失都补回默认序
+- (NSArray<NSNumber *> *)channelOrder {
+    NSArray<NSNumber *> *all = @[@0, @1, @2];
+    NSMutableArray<NSNumber *> *order = [NSMutableArray array];
+    for (NSNumber *page in [NSUserDefaults.standardUserDefaults arrayForKey:kChannelOrder])
+        if ([all containsObject:page] && ![order containsObject:page]) [order addObject:page];
+    for (NSNumber *page in all)
+        if (![order containsObject:page]) [order addObject:page];
+    return order;
+}
+
+- (void)setChannelOrder:(NSArray<NSNumber *> *)order {
+    [NSUserDefaults.standardUserDefaults setObject:order forKey:kChannelOrder];
 }
 
 - (BOOL)isTabHidden:(NSString *)name {

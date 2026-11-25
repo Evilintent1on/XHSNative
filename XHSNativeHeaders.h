@@ -43,6 +43,9 @@
 - (UIImageView *)background;
 @end
 
+@interface XYSegmentControl : UIView
+@end
+
 @interface XYMHomeLayoutAdapter : NSObject
 @end
 
