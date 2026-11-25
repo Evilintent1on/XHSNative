@@ -7,7 +7,6 @@
 //
 #import "XHSNativeHelper.h"
 #import <dlfcn.h>
-#import <mach-o/dyld.h>
 #import <mach-o/loader.h>
 #import <mach-o/nlist.h>
 #import <mach/mach.h>
@@ -73,100 +72,52 @@
 
 #pragma mark - 双击放大
 
-// 笔记页图片的双指放大由 PinchController 处理：开始时把图片截下来放到全屏的遮罩上，
-// 跟着手指缩放和移动，松手弹回。双击时喂给它一个假的双指手势，效果和双指放大一样；
-// 放大后盖一层透明的视图接手势：单指拖动、双指继续缩放，点一下松开，用它自己的弹回动画收起
-
-@interface XHSNativeFakePinch : UIPinchGestureRecognizer
-@property (nonatomic) UIGestureRecognizerState fakeState;
-@property (nonatomic) CGFloat fakeScale;
-@property (nonatomic) CGPoint fakePoint;  // 窗口坐标
-@property (nonatomic, weak) UIView *hostView;
+// 交给笔记图片轮播的一次「单击」。它处理点按时只看手势的 state 和 recognizedTap（1 单击，2 双击）
+@interface XHSNativeSingleTap : NSObject
 @end
 
-@implementation XHSNativeFakePinch
+@implementation XHSNativeSingleTap
 
 - (UIGestureRecognizerState)state {
-    return self.fakeState;
+    return UIGestureRecognizerStateEnded;
 }
 
-- (CGFloat)scale {
-    return self.fakeScale;
-}
-
-- (NSUInteger)numberOfTouches {
-    return 2;
-}
-
-- (UIView *)view {
-    return self.hostView;
-}
-
-- (CGPoint)locationInView:(UIView *)view {
-    return view ? [view convertPoint:self.fakePoint fromView:nil] : self.fakePoint;
+- (NSUInteger)recognizedTap {
+    return 1;
 }
 
 @end
 
-@interface XHSNativePinchHold : NSObject
-@property (nonatomic, strong) id controller;
-@property (nonatomic, strong) XHSNativeFakePinch *pinch;
-@property (nonatomic, strong) UIView *catcher;
-@property (nonatomic) CGPoint start;
-@property (nonatomic) CGFloat baseScale;
-@property (nonatomic, strong) CADisplayLink *link;
-@property (nonatomic) CFTimeInterval beginTime;
-@end
+#pragma mark - 小红书主程序
 
-static XHSNativePinchHold *gPinchHold;
-static const CGFloat kZoomScale = 2.5;
+// 小红书主程序的镜像。不按 MH_EXECUTE 找：用 LiveContainer 这类容器加载时，进程的主程序是容器自己，
+// 小红书是被当成动态库加载进来的。按它里面的类落在哪个镜像来找，两种情况都对
+struct XHSAppImage {
+    const struct mach_header_64 *header;
+    intptr_t slide;
+    uintptr_t textSize;
+};
 
-@implementation XHSNativePinchHold
-
-- (void)send:(UIGestureRecognizerState)state {
-    self.pinch.fakeState = state;
-    [self.controller didReceivePinchWithRecognizer:self.pinch];
+static const struct XHSAppImage *appImage(void) {
+    static struct XHSAppImage app;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        Dl_info info;
+        if (!dladdr((__bridge void *)objc_getClass("XYTabbarController"), &info) || !info.dli_fbase) return;
+        const struct mach_header_64 *header = (const struct mach_header_64 *)info.dli_fbase;
+        if (header->magic != MH_MAGIC_64) return;
+        const struct load_command *command = (const struct load_command *)(header + 1);
+        for (uint32_t i = 0; i < header->ncmds; i++, command = (const struct load_command *)((const char *)command + command->cmdsize)) {
+            const struct segment_command_64 *segment = (const struct segment_command_64 *)command;
+            if (command->cmd != LC_SEGMENT_64 || strcmp(segment->segname, SEG_TEXT)) continue;
+            app.header = header;
+            app.slide = (intptr_t)header - (intptr_t)segment->vmaddr;
+            app.textSize = segment->vmsize;
+            break;
+        }
+    });
+    return &app;
 }
-
-- (CGFloat)clampScale:(CGFloat)scale {
-    CGFloat limit = [self.controller maxScale] > 1 ? [self.controller maxScale] : kZoomScale;
-    return MAX(1, MIN(limit, scale));
-}
-
-// 从 1 倍放大到 2.5 倍，和手指张开一样逐帧喂
-- (void)grow:(CADisplayLink *)link {
-    if (!self.beginTime) self.beginTime = link.timestamp;
-    CGFloat progress = MIN(1, (link.timestamp - self.beginTime) / 0.25);
-    CGFloat eased = 1 - pow(1 - progress, 3);
-    self.pinch.fakeScale = [self clampScale:1 + (kZoomScale - 1) * eased];
-    [self send:UIGestureRecognizerStateChanged];
-    if (progress < 1) return;
-    [link invalidate];
-    self.link = nil;
-}
-
-- (void)pan:(UIPanGestureRecognizer *)pan {
-    if (pan.state == UIGestureRecognizerStateBegan) self.start = self.pinch.fakePoint;
-    CGPoint move = [pan translationInView:nil];
-    self.pinch.fakePoint = CGPointMake(self.start.x + move.x, self.start.y + move.y);
-    [self send:UIGestureRecognizerStateChanged];
-}
-
-- (void)zoom:(UIPinchGestureRecognizer *)zoom {
-    if (zoom.state == UIGestureRecognizerStateBegan) self.baseScale = self.pinch.fakeScale;
-    self.pinch.fakeScale = [self clampScale:self.baseScale * zoom.scale];
-    [self send:UIGestureRecognizerStateChanged];
-}
-
-- (void)finish {
-    [self.link invalidate];
-    self.link = nil;
-    [self.catcher removeFromSuperview];
-    [self send:UIGestureRecognizerStateEnded];
-    gPinchHold = nil;
-}
-
-@end
 
 #pragma mark - iOS 27.1 以下
 
@@ -195,14 +146,8 @@ __attribute__((naked)) static void layoutRegionBar(void) {
 
 // 在主程序的导入表里按符号名找到对应的指针槽：间接符号表 → 符号表 → 名字
 static void **importSlot(const char *symbol) {
-    const struct mach_header_64 *header = NULL;
-    intptr_t slide = 0;
-    for (uint32_t i = 0; i < _dyld_image_count() && !header; i++) {
-        const struct mach_header_64 *image = (const struct mach_header_64 *)_dyld_get_image_header(i);
-        if (image->magic != MH_MAGIC_64 || image->filetype != MH_EXECUTE) continue;
-        header = image;
-        slide = _dyld_get_image_vmaddr_slide(i);
-    }
+    const struct mach_header_64 *header = appImage()->header;
+    intptr_t slide = appImage()->slide;
     if (!header) return NULL;
 
     const struct symtab_command *symtab = NULL;
@@ -354,25 +299,10 @@ static NSArray<NSArray *> *glassBars(void) {
 
 #pragma mark - 小红书
 
-// 这几个方法调用得很频繁，不用 dladdr，先算好主程序代码段的地址范围直接比
+// 这几个方法调用得很频繁，直接和主程序代码段的地址范围比
 + (BOOL)isAppAddress:(void *)address {
-    static uintptr_t start, end;
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{
-        for (uint32_t i = 0; i < _dyld_image_count() && !start; i++) {
-            const struct mach_header_64 *header = (const struct mach_header_64 *)_dyld_get_image_header(i);
-            if (header->filetype != MH_EXECUTE) continue;
-            const struct load_command *command = (const struct load_command *)(header + 1);
-            for (uint32_t j = 0; j < header->ncmds; j++, command = (const struct load_command *)((const char *)command + command->cmdsize)) {
-                const struct segment_command_64 *segment = (const struct segment_command_64 *)command;
-                if (command->cmd != LC_SEGMENT_64 || strcmp(segment->segname, SEG_TEXT)) continue;
-                start = (uintptr_t)header;
-                end = start + segment->vmsize;
-                break;
-            }
-        }
-    });
-    return (uintptr_t)address >= start && (uintptr_t)address < end;
+    uintptr_t start = (uintptr_t)appImage()->header;
+    return start && (uintptr_t)address >= start && (uintptr_t)address < start + appImage()->textSize;
 }
 
 + (id)themeGlyph:(NSString *)name {
@@ -594,6 +524,12 @@ static char kBarEdgeKey, kSoftEdgeKey, kPublishKey, kSegmentGlassKey;
     }
 }
 
+// 发布是不是在底栏：用户对调了，或者是折叠屏。折叠屏上小红书自己接管系统底栏，带发布、不带搜索
++ (BOOL)isPublishInTabBar {
+    XYTabbarController *controller = XHSNativeConfig.shared.tabBarController;
+    return XHSNativeConfig.shared.isPublishSwapped || ([controller respondsToSelector:@selector(useLiquidGlass)] && [controller useLiquidGlass]);
+}
+
 + (void)layoutHomeBar:(XYMHomeNaviBar *)bar {
     XHSNativeConfig.shared.homeBar = bar;
     [self stripBarBackground:bar];
@@ -609,8 +545,8 @@ static char kBarEdgeKey, kSoftEdgeKey, kPublishKey, kSegmentGlassKey;
     if (!menu || !search) return;
     XHSNativeConfig.shared.searchButton = (UIControl *)search;
 
-    if (XHSNativeConfig.shared.isPublishSwapped) {
-        // 发布去了底栏，原来的搜索留在顶栏。之前收起过的话放出来
+    if ([self isPublishInTabBar]) {
+        // 发布在底栏，原来的搜索留在顶栏。之前收起过的话放出来
         if (publish) {
             [publish removeFromSuperview];
             objc_setAssociatedObject(bar, &kPublishKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
@@ -821,6 +757,12 @@ static BOOL XHSNIsSegIndicator(UIView *v) {
     return @"SETTING";
 }
 
+// 入口按侧边栏菜单处理时，服务器配的图标还是点点的那张，不让顶栏再去套它
++ (BOOL)keepsMenuIcon {
+    if (!XHSNativeConfig.shared.isDotsDisabled) return NO;
+    return [[[objc_getClass("XYHomeModule.MainFrameEntranceConfigManager") shared] leftSideBarType] isEqualToString:@"SETTING"];
+}
+
 #pragma mark - 滚动联动
 
 + (void)trackScrollView:(UIScrollView *)list {
@@ -918,6 +860,22 @@ static CGRect layoutFrame(UIView *view) {
     return CGRectMake(view.center.x - size.width / 2, view.center.y - size.height / 2, size.width, size.height);
 }
 
+// 一组按钮里看得见的内容占的范围（在这组自己的坐标里）。栈里可能留着不显示的位置，
+// 按钮也可能比里面的图标和数字宽，按整组的宽度垫玻璃会一边空出一截
+static CGRect visibleSpan(UIView *group) {
+    CGRect span = CGRectNull;
+    for (UIView *button in group.subviews) {
+        if (button.hidden || button.alpha < 0.01 || CGRectIsEmpty(button.bounds)) continue;
+        CGRect frame = layoutFrame(button), content = CGRectNull;
+        for (UIView *view in button.subviews) {
+            BOOL shown = !view.hidden && view.alpha > 0.01 && !CGRectIsEmpty(view.bounds);
+            if (shown && ([view isKindOfClass:UIImageView.class] || [view isKindOfClass:UILabel.class])) content = CGRectUnion(content, layoutFrame(view));
+        }
+        span = CGRectUnion(span, CGRectIsNull(content) ? frame : CGRectOffset(content, CGRectGetMinX(frame), CGRectGetMinY(frame)));
+    }
+    return CGRectIsNull(span) ? group.bounds : span;
+}
+
 static void setOffset(UIView *view, CGFloat x, CGFloat y) {
     CGAffineTransform transform = (fabs(x) < 0.5 && fabs(y) < 0.5) ? CGAffineTransformIdentity : CGAffineTransformMakeTranslation(x, y);
     if (view && !CGAffineTransformEqualToTransform(view.transform, transform)) view.transform = transform;
@@ -1004,9 +962,9 @@ static void setOffset(UIView *view, CGFloat x, CGFloat y) {
     setOffset(stack, 0, y + height / 2 - CGRectGetMidY(row));
 
     CGRect left = CGRectMake(margin, y, width - margin * 2, height), right = CGRectZero;
+    CGRect span = buttons ? visibleSpan(buttons) : CGRectZero;
     if (fieldGroup && buttons) {
-        CGRect group = layoutFrame(buttons);
-        right = CGRectMake(width - margin - CGRectGetWidth(group) - padding * 2, y, CGRectGetWidth(group) + padding * 2, height);
+        right = CGRectMake(width - margin - CGRectGetWidth(span) - padding * 2, y, CGRectGetWidth(span) + padding * 2, height);
         left.size.width = CGRectGetMinX(right) - gap - margin;
         if (CGRectGetWidth(left) < 80) {
             // 数字太长放不下两块，退回一整条
@@ -1014,15 +972,34 @@ static void setOffset(UIView *view, CGFloat x, CGFloat y) {
             right = CGRectZero;
         }
     }
+    CAGradientLayer *fade = (CAGradientLayer *)fieldGroup.layer.mask;
     if (CGRectIsEmpty(right)) {
         setOffset(fieldGroup, 0, 0);
         setOffset(buttons, 0, 0);
+        fieldGroup.layer.mask = nil;
     } else {
         setOffset(fieldGroup, margin + 6 - CGRectGetMinX(row) - CGRectGetMinX(layoutFrame(fieldGroup)), 0);
-        setOffset(buttons, CGRectGetMaxX(right) - padding - CGRectGetMinX(row) - CGRectGetMaxX(layoutFrame(buttons)), 0);
+        setOffset(buttons, CGRectGetMaxX(right) - padding - CGRectGetMinX(row) - CGRectGetMinX(layoutFrame(buttons)) - CGRectGetMaxX(span), 0);
+        // 评论框还是原来的宽度，比胶囊宽。提示语长的时候（比如英文界面）会伸到右边那块上，超出胶囊的部分渐隐掉
+        if (![fade isKindOfClass:CAGradientLayer.class]) {
+            fade = [CAGradientLayer layer];
+            fade.startPoint = CGPointMake(0, 0.5);
+            fade.endPoint = CGPointMake(1, 0.5);
+            fade.colors = @[(id)UIColor.blackColor.CGColor, (id)UIColor.blackColor.CGColor, (id)UIColor.clearColor.CGColor];
+            fieldGroup.layer.mask = fade;
+        }
+        CGRect visible = CGRectMake(0, 0, CGRectGetMaxX(left) - 2 - (margin + 6), CGRectGetHeight(fieldGroup.bounds));
+        if (!CGRectEqualToRect(fade.frame, visible)) {
+            [CATransaction begin];
+            [CATransaction setDisableActions:YES];
+            fade.frame = visible;
+            fade.locations = @[@0, @(1 - 8 / CGRectGetWidth(visible)), @1];
+            [CATransaction commit];
+        }
     }
-    [self plateOn:bar key:&kNoteBottomKey below:stack frame:left bar:kXHSNativeBarNoteBottom];
-    [self plateOn:bar key:&kNoteBottomRightKey below:stack frame:right bar:kXHSNativeBarNoteBottom];
+    // 玻璃记在它所在的那层上：这一层会被小红书拿到别的笔记页里接着用，记在外层的话每开一篇就多垫一块
+    [self plateOn:content key:&kNoteBottomKey below:stack frame:left bar:kXHSNativeBarNoteBottom];
+    [self plateOn:content key:&kNoteBottomRightKey below:stack frame:right bar:kXHSNativeBarNoteBottom];
 }
 
 + (void)layoutNotePage:(UIViewController *)page {
@@ -1085,44 +1062,51 @@ static void setOffset(UIView *view, CGFloat x, CGFloat y) {
     }
 }
 
-// 双击图片：用小红书自己的双指放大，见 XHSNativePinchHold
-+ (void)toggleZoomInBrowser:(UIView *)browser {
-    if (gPinchHold) return [gPinchHold finish];
-    id controller = [browser respondsToSelector:@selector(pinchController)] ? [browser pinchController] : nil;
-    if (![controller respondsToSelector:@selector(didReceivePinchWithRecognizer:)] || ![controller installed] || [controller inTransform]) return;
-    UIWindow *window = browser.window;
-    UIGestureRecognizer *real = [controller recognizer];
-    if (!window || !real.view) return;
-
-    XHSNativePinchHold *hold = [XHSNativePinchHold new];
-    hold.controller = controller;
-    hold.pinch = [[XHSNativeFakePinch alloc] initWithTarget:nil action:nil];
-    hold.pinch.hostView = real.view;
-    hold.pinch.fakeScale = 1;
-    // 以点按的位置为中心放大
+// 双击笔记里的图片：和单击一样进小红书的大图，再放大到点的位置。
+// 大图里的双击放大是小红书自带的（实验开关，见 hook），所以进去以后再双击就缩回
++ (void)openGalleryZoomedFrom:(UIView *)browser {
+    if (![browser respondsToSelector:@selector(handleWithMultiGesture:)]) return;
+    UIView *image = [browser respondsToSelector:@selector(currentImageView)] ? [browser currentImageView] : nil;
     id tap = [browser respondsToSelector:@selector(multiRegesture)] ? [browser multiRegesture] : nil;
-    hold.pinch.fakePoint = [tap isKindOfClass:UIGestureRecognizer.class] ? [(UIGestureRecognizer *)tap locationInView:nil]
-                                                                        : [browser convertPoint:CGPointMake(CGRectGetMidX(browser.bounds), CGRectGetMidY(browser.bounds)) toView:nil];
-    // 开始时它从自己的 recognizer 取位置和手指数，先换成假的
-    [controller setRecognizer:hold.pinch];
-    [hold send:UIGestureRecognizerStateBegan];
-    [controller setRecognizer:real];
-    if (![controller inTransform]) return;
-
-    UIView *catcher = [[UIView alloc] initWithFrame:window.bounds];
-    catcher.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
-    [catcher addGestureRecognizer:[[UIPanGestureRecognizer alloc] initWithTarget:hold action:@selector(pan:)]];
-    [catcher addGestureRecognizer:[[UIPinchGestureRecognizer alloc] initWithTarget:hold action:@selector(zoom:)]];
-    [catcher addGestureRecognizer:[[UITapGestureRecognizer alloc] initWithTarget:hold action:@selector(finish)]];
-    [window addSubview:catcher];
-    hold.catcher = catcher;
-    hold.link = [CADisplayLink displayLinkWithTarget:hold selector:@selector(grow:)];
-    [hold.link addToRunLoop:NSRunLoop.mainRunLoop forMode:NSRunLoopCommonModes];
-    gPinchHold = hold;
+    CGPoint unit = CGPointMake(0.5, 0.5);
+    if ([image isKindOfClass:UIView.class] && [tap isKindOfClass:UIGestureRecognizer.class] && !CGRectIsEmpty(image.bounds)) {
+        CGPoint point = [(UIGestureRecognizer *)tap locationInView:image];
+        unit = CGPointMake(MAX(0, MIN(1, point.x / CGRectGetWidth(image.bounds))), MAX(0, MIN(1, point.y / CGRectGetHeight(image.bounds))));
+    }
+    [browser handleWithMultiGesture:[XHSNativeSingleTap new]];
+    [self zoomGalleryIn:browser.window at:unit tries:40];
 }
 
-+ (void)resetZoom {
-    [gPinchHold finish];
+// 大图是带转场出来的：转场期间它的列表是藏着的，这时候设缩放会被冲掉。等它露出来再放大
++ (void)zoomGalleryIn:(UIWindow *)window at:(CGPoint)unit tries:(NSInteger)tries {
+    UIScrollView *scroll = [self galleryScrollViewIn:window];
+    UIView *image = [scroll.delegate respondsToSelector:@selector(viewForZoomingInScrollView:)] ? [scroll.delegate viewForZoomingInScrollView:scroll] : nil;
+    BOOL ready = image && !CGRectIsEmpty(image.bounds);
+    for (UIView *view = scroll; view && ready; view = view.superview) ready = !view.hidden && view.alpha > 0.01;
+    if (!ready) {
+        if (tries > 0) dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.05 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            [self zoomGalleryIn:window at:unit tries:tries - 1];
+        });
+        return;
+    }
+    CGFloat scale = MIN(2, scroll.maximumZoomScale);  // 和它自己双击放大的倍数一样
+    CGSize size = CGSizeMake(CGRectGetWidth(scroll.bounds) / scale, CGRectGetHeight(scroll.bounds) / scale);
+    CGPoint center = CGPointMake(unit.x * CGRectGetWidth(image.bounds), unit.y * CGRectGetHeight(image.bounds));
+    [scroll zoomToRect:CGRectMake(center.x - size.width / 2, center.y - size.height / 2, size.width, size.height) animated:YES];
+}
+
+// 大图当前这一页的缩放视图
++ (UIScrollView *)galleryScrollViewIn:(UIView *)view {
+    if ([view isKindOfClass:UIScrollView.class] && [NSStringFromClass(view.superview.class) containsString:@"GalleryItemView"]) {
+        UIScrollView *scroll = (UIScrollView *)view;
+        CGRect frame = [scroll convertRect:scroll.bounds toView:nil];
+        if (scroll.maximumZoomScale > 1 && fabs(CGRectGetMinX(frame)) < 1) return scroll;
+    }
+    for (UIView *subview in view.subviews) {
+        UIScrollView *scroll = [self galleryScrollViewIn:subview];
+        if (scroll) return scroll;
+    }
+    return nil;
 }
 
 #pragma mark - 视频页

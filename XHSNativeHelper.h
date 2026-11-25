@@ -53,6 +53,7 @@
 + (NSArray *)visibleChannels:(NSArray *)children;
 + (NSUInteger)landingChannel:(NSUInteger)page ofHome:(XYMHomeViewController *)home;
 + (NSString *)leftEntranceType:(NSString *)type;
++ (BOOL)keepsMenuIcon;
 
 #pragma mark - 滚动联动
 
@@ -64,8 +65,7 @@
 + (void)layoutNotePage:(UIViewController *)page;
 + (void)layoutNoteTop:(UIView *)bar;
 + (void)recenterAuthorRow:(UIView *)row;
-+ (void)toggleZoomInBrowser:(UIView *)browser;
-+ (void)resetZoom;
++ (void)openGalleryZoomedFrom:(UIView *)browser;
 + (void)layoutVideoHead:(UIView *)head;
 + (void)layoutVideoEngage:(UIView *)bar;
 

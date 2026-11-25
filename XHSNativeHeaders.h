@@ -8,6 +8,7 @@
 #import <UIKit/UIKit.h>
 
 @interface XYTabbarController : UITabBarController
+- (BOOL)useLiquidGlass;
 - (UIControl *)centerButton;
 - (UIView *)customtabBar;
 - (NSDictionary<NSNumber *, NSString *> *)badgeValueDict;
@@ -88,6 +89,8 @@
 
 // 下面几个是 Swift 类，真名在 %ctor 里对上
 @interface XYMainFrameEntranceConfig : NSObject
++ (instancetype)shared;
+- (NSString *)leftSideBarType;
 @end
 
 @interface XYMainFrameLeftCache : NSObject
@@ -145,16 +148,14 @@
 @interface XYNoteImageView : UIView
 @end
 
-// 笔记页的图片轮播（XYNoteBasic.ImageBrowser）和它的双指放大（XYNoteBasic.PinchController）
+// 笔记页的图片轮播（XYNoteBasic.ImageBrowser）
 @interface NSObject (XYNoteImageBrowser)
+- (UIView *)currentImageView;
 - (id)multiRegesture;
-- (id)pinchController;
-- (BOOL)installed;
-- (BOOL)inTransform;
-- (CGFloat)maxScale;
-- (UIGestureRecognizer *)recognizer;
-- (void)setRecognizer:(UIGestureRecognizer *)recognizer;
-- (void)didReceivePinchWithRecognizer:(UIGestureRecognizer *)recognizer;
+- (void)handleWithMultiGesture:(id)gesture;
+@end
+
+@interface XYNoteDetailExpManager : NSObject
 @end
 
 @interface XYVFHeadView : UIView

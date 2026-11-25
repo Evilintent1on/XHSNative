@@ -326,6 +326,13 @@
 }
 %end
 
+%hook XYMHomeNaviBar
+- (void)updateHomeMenuFromConfig:(BOOL)animated {
+    if ([XHSNativeHelper keepsMenuIcon]) return;
+    %orig;
+}
+%end
+
 %hook XYHomeDotsSwipeInstaller
 + (id)installWithHost:(id)host pager:(id)pager finishPagerHandoff:(id)handoff {
     return XHSNativeConfig.shared.isDotsDisabled ? nil : %orig;
@@ -531,15 +538,18 @@
 }
 %end
 
-// 双击图片：放大，不点赞
+// 双击图片：进大图并放大，不点赞
 %hook XYNoteImageView
 - (void)browser:(id)browser doubleClickedAt:(NSInteger)index {
     if (!XHSNativeConfig.shared.isDoubleTapZoomEnabled) return %orig;
-    [XHSNativeHelper toggleZoomInBrowser:browser];
+    [XHSNativeHelper openGalleryZoomedFrom:browser];
 }
-- (void)browser:(id)browser indexDidChanged:(NSInteger)index {
-    %orig;
-    [XHSNativeHelper resetZoom];
+%end
+
+// 小红书自带的「大图里双击放大」，原本是按实验下发的
+%hook XYNoteDetailExpManager
+- (BOOL)noteGalleryDoubleTapZoomExperimentEnable {
+    return XHSNativeConfig.shared.isDoubleTapZoomEnabled || %orig;
 }
 %end
 
