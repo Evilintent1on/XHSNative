@@ -8,12 +8,13 @@
 
 TARGET = iphone:clang:latest:15.0
 ARCHS = arm64
+THEOS_PACKAGE_SCHEME = rootless
 
 export DEBUG = 0
 
 include $(THEOS)/makefiles/common.mk
 
-LIBRARY_NAME = XHSNative
+TWEAK_NAME = XHSNative
 RELEASE_VERSION := $(shell awk -F'"' '/define XHSNativeVersion / {sub(/[^0-9.].*/, "", $$2); print $$2}' XHSNativeConfig.h)
 
 XHSNative_FILES = XHSNative.xm XHSNativeHelper.m XHSNativeConfig.m
@@ -23,13 +24,17 @@ XHSNative_FRAMEWORKS = UIKit
 XHSNative_LDFLAGS = -Wl,-install_name,@rpath/XHSNative.dylib
 XHSNative_LOGOSFLAGS = -c generator=internal
 
-include $(THEOS_MAKE_PATH)/library.mk
+include $(THEOS_MAKE_PATH)/tweak.mk
 
 # 产物放到 packages 目录
 after-all::
 	@mkdir -p packages
-	@cp $(THEOS_OBJ_DIR)/$(LIBRARY_NAME).dylib packages/$(LIBRARY_NAME)-$(RELEASE_VERSION).dylib
-	@echo -e "\033[32m==>\033[0m packages/$(LIBRARY_NAME)-$(RELEASE_VERSION).dylib"
+	@cp $(THEOS_OBJ_DIR)/XHSNative.dylib packages/XHSNative-$(RELEASE_VERSION).dylib
+	@echo -e "\033[32m==>\033[0m packages/XHSNative-$(RELEASE_VERSION).dylib"
+
+# 打包时把 control 里的版本号同步成 Config.h 里的版本，免得两处对不上
+before-package::
+	@sed -i '' 's/^Version:.*/Version: $(RELEASE_VERSION)/' $(THEOS_STAGING_DIR)/DEBIAN/control
 
 clean::
 	@rm -rf .theos packages

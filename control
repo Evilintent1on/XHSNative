@@ -1,0 +1,9 @@
+Package: com.evilintent1on.xhsnative
+Name: XHSNative
+Version: 1.4.16
+Architecture: iphoneos-arm64
+Description: XHSNative（fork）：小红书液态玻璃 + 底栏文字 + 城市显示同城
+Maintainer: Evilintent1on
+Author: huami
+Section: Tweaks
+Depends: mobilesubstrate
