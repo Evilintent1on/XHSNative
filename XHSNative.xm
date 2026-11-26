@@ -11,6 +11,7 @@
 #import "XHSNativeConfig.h"
 #import "XHSNativeHeaders.h"
 #import "XHSNativeHelper.h"
+#import "XHSNativeSave.h"
 
 #pragma mark - 底栏
 
@@ -299,16 +300,6 @@
 
 %end
 
-%hook XYSegmentControl
-
-- (void)layoutSubviews {
-    %orig;
-    [XHSNativeHelper renameSegmentChannels:self];
-    [XHSNativeHelper hideSegmentLine:self];
-}
-
-%end
-
 #pragma mark - 点点
 
 // 点点的入口：首页左上角、首页左滑、笔记里的「问点点」、分享面板。禁用后都按没有点点处理
@@ -398,10 +389,6 @@
 - (void)didMoveToWindow {
     %orig;
     [XHSNativeHelper trackScrollView:self];
-}
-- (void)layoutSubviews {
-    %orig;
-    [XHSNativeHelper hideSegmentLineForScrollView:self];
 }
 %end
 
@@ -546,6 +533,108 @@
 }
 %end
 
+#pragma mark - 无水印保存
+
+// 小红书保存别人的笔记时，图片在本地画水印，视频和实况等服务器渲染带水印的版本；
+// 笔记保存配置的 disableWatermark 为真时（自己的笔记就是这样）直接存原图、原视频。
+// disableSave 是作者关闭了保存，分享面板、长按、视频保存都看它。保存仍然走小红书自己的按钮
+%hook XYPHMediaSaveConfig
+- (BOOL)disableWatermark {
+    return XHSNativeConfig.shared.isNoWatermarkEnabled || %orig;
+}
+
+- (BOOL)disableSave {
+    if (XHSNativeConfig.shared.isSaveRestrictionIgnored) return NO;
+    return %orig;
+}
+%end
+
+// 没有保存配置的笔记补一个默认的，不然读到的 disableWatermark 是空
+%hook XYPHBaseNote
+- (XYPHMediaSaveConfig *)mediaSaveConfig {
+    XYPHMediaSaveConfig *config = %orig;
+    if (config || !XHSNativeConfig.shared.isNoWatermarkEnabled) return config;
+    return [objc_getClass("XYPHMediaSaveConfig") new];
+}
+%end
+
+// 视频下载器自己也记着这个值，不去水印时会轮询服务器拿渲染好的带水印视频
+%hook XYVFVideoDownloaderManager
+- (BOOL)disableWatermark {
+    return XHSNativeConfig.shared.isNoWatermarkEnabled || %orig;
+}
+%end
+
+// 实况的视频那一段不看 disableWatermark：总是先请求 note/live_photo/save，让服务器渲染带水印的视频，
+// disableWatermark 只管封面。无水印时跳过这一步，把笔记里原始的实况视频直接交给后面的保存
+%hook XYImageSaveService
+- (void)requestLivePhotoWatermarkWithImageInfo:(id)imageInfo userId:(NSString *)userId disableWatermark:(BOOL)disableWatermark startTime:(double)startTime {
+    NSString *video = nil;
+    @try { video = [imageInfo valueForKey:@"livePhotoVideoUrl"]; } @catch (NSException *exception) {}
+    if (!XHSNativeConfig.shared.isNoWatermarkEnabled || ![video isKindOfClass:NSString.class] || !video.length) return %orig;
+    [self saveLivePhotoWatermarkWithLivePhotoVideoURL:video imageInfo:imageInfo userId:userId disableWatermark:YES startTime:startTime];
+}
+%end
+
+// 作者关闭下载时，笔记功能开关里 image_download、video_download 不可用，长按面板、分享面板、视频页的保存都按它置灰
+%hook XYPHFunctionSwitchInfo
+- (BOOL)enable {
+    if (!XHSNativeConfig.shared.isSaveRestrictionIgnored) return %orig;
+    id type = nil;
+    @try { type = [self valueForKey:@"type"]; } @catch (NSException *exception) {}
+    if ([type isKindOfClass:NSString.class] && [type hasSuffix:@"_download"]) return YES;
+    return %orig;
+}
+%end
+
+// 评论区的保存：记下加载过的评论，保存时按评论 id 找回原始的视频、实况、图片地址
+%hook XYPHNoteComment
+- (void)setCommentImages:(NSArray *)images {
+    %orig;
+    if (images.count) [XHSNativeSave rememberComment:self];
+}
+
+- (void)setCommentVideos:(NSArray *)videos {
+    %orig;
+    if (videos.count) [XHSNativeSave rememberComment:self];
+}
+%end
+
+// 评论视频、实况原本请求服务器渲染带水印的版本
+%hook XYCommentMediaSaveService
+- (void)saveVideoWithNoteId:(NSString *)noteId commentId:(NSString *)commentId videoIndex:(NSInteger)index {
+    if (XHSNativeConfig.shared.isNoWatermarkEnabled && [XHSNativeSave saveCommentVideoWithCommentId:commentId index:index]) return;
+    %orig;
+}
+
+- (void)saveLivePhotoWithNoteId:(NSString *)noteId commentId:(NSString *)commentId userId:(NSString *)userId imageUrlString:(NSString *)imageURL inputVideoId:(NSString *)videoId {
+    if (XHSNativeConfig.shared.isNoWatermarkEnabled && [XHSNativeSave saveCommentLivePhotoWithCommentId:commentId videoId:videoId imageURL:imageURL]) return;
+    %orig;
+}
+%end
+
+// 评论里的图片走另一套保存，没有不加水印的选项，按作者 id 生成水印后和原图、AI 标识画在一起存成静态图。
+// 无水印时直接存原图数据，有动图就存动图；原图没存成退回原流程时，把水印换成透明的一像素，AI 生成内容的标识照样画
+%hook XYImageCommentManager
+- (void)saveImageWithUrl:(NSString *)url authorId:(NSString *)authorId {
+    if (!XHSNativeConfig.shared.isNoWatermarkEnabled) return %orig;
+    __weak typeof(self) weakSelf = self;
+    if (![XHSNativeSave saveCommentImageWithURL:url completion:^(BOOL success) { [weakSelf showResultWithIsSuccess:success]; }]) %orig;
+}
+
+- (UIImage *)buildWaterMarkImageWith:(UIImage *)watermark aigcImage:(UIImage *)aigcImage baseImage:(UIImage *)baseImage outImage:(id)outImage isHdr:(BOOL)isHdr {
+    if (!XHSNativeConfig.shared.isNoWatermarkEnabled) return %orig;
+    static UIImage *clear;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        UIGraphicsImageRendererFormat *format = [UIGraphicsImageRendererFormat preferredFormat];
+        format.opaque = NO;
+        clear = [[[UIGraphicsImageRenderer alloc] initWithSize:CGSizeMake(1, 1) format:format] imageWithActions:^(UIGraphicsImageRendererContext *context) {}];
+    });
+    return %orig(clear, aigcImage, baseImage, outImage, isHdr);
+}
+%end
+
 // 小红书自带的「大图里双击放大」，原本是按实验下发的
 %hook XYNoteDetailExpManager
 - (BOOL)noteGalleryDoubleTapZoomExperimentEnable {
@@ -603,7 +692,7 @@
     %orig;
     XHSNativeSettingsPage *page = self;
     if (!page.mode) page.tableView.tableFooterView = [XHSNativeHelper settingsFooterWithWidth:CGRectGetWidth(page.tableView.bounds)];
-    if ([page.mode isEqualToString:@"order"] || [page.mode isEqualToString:@"channelOrder"]) [page.tableView setEditing:YES animated:NO];
+    if ([XHSNativeHelper isOrderMode:page.mode]) [page.tableView setEditing:YES animated:NO];
     [[page navBar] setValue:[XHSNativeHelper titleForMode:page.mode] forKey:@"title"];
 }
 
@@ -614,8 +703,7 @@
 
 %new
 - (BOOL)tableView:(UITableView *)table canMoveRowAtIndexPath:(NSIndexPath *)path {
-    NSString *mode = ((XHSNativeSettingsPage *)self).mode;
-    return [mode isEqualToString:@"order"] || [mode isEqualToString:@"channelOrder"];
+    return [XHSNativeHelper isOrderMode:((XHSNativeSettingsPage *)self).mode];
 }
 
 %new
@@ -631,24 +719,9 @@
 %new
 - (void)tableView:(UITableView *)table moveRowAtIndexPath:(NSIndexPath *)source toIndexPath:(NSIndexPath *)destination {
     if ([source isEqual:destination]) return;
-    XHSNativeConfig *config = XHSNativeConfig.shared;
-    if ([((XHSNativeSettingsPage *)self).mode isEqualToString:@"channelOrder"]) {
-        NSMutableArray *order = [config.channelOrder mutableCopy];
-        NSNumber *page = order[source.row];
-        [order removeObjectAtIndex:source.row];
-        [order insertObject:page atIndex:destination.row];
-        config.channelOrder = order;
-        [[(XHSNativeSettingsPage *)self vm] setValue:[XHSNativeHelper channelOrderRows] forKey:@"options"];
-        dispatch_async(dispatch_get_main_queue(), ^{ [table reloadData]; });
-        [XHSNativeHelper applySettings];
-        return;
-    }
-    NSMutableArray *order = [config.tabOrder mutableCopy];
-    NSString *name = order[source.row];
-    [order removeObjectAtIndex:source.row];
-    [order insertObject:name atIndex:destination.row];
-    config.tabOrder = order;
-    [[(XHSNativeSettingsPage *)self vm] setValue:[XHSNativeHelper orderRows] forKey:@"options"];
+    NSString *mode = ((XHSNativeSettingsPage *)self).mode;
+    [XHSNativeHelper moveOrderInMode:mode from:source.row to:destination.row];
+    [[(XHSNativeSettingsPage *)self vm] setValue:[XHSNativeHelper orderRowsForMode:mode] forKey:@"options"];
     // 拖动结束后，按新位置重设首尾行的圆角。
     dispatch_async(dispatch_get_main_queue(), ^{ [table reloadData]; });
     [XHSNativeHelper applySettings];
@@ -657,9 +730,7 @@
 %new
 - (void)reloadRows {
     XHSNativeSettingsPage *page = self;
-    NSArray *rows = !page.mode ? [XHSNativeHelper settingsRows]
-                               : ([page.mode isEqualToString:@"order"] ? [XHSNativeHelper orderRows]
-                               : ([page.mode isEqualToString:@"channelOrder"] ? [XHSNativeHelper channelOrderRows] : [XHSNativeHelper percentRowsForBar:page.mode]));
+    NSArray *rows = [XHSNativeHelper rowsForMode:page.mode];
     ((void (*)(id, SEL, id))objc_msgSend)([page vm], NSSelectorFromString(@"reload:"), rows);
 }
 
@@ -721,6 +792,8 @@
           XYNoteDetailPage = objc_getClass("XYNoteModule.NoteDetailPageInterface"),
           XYNoteDirectionView = objc_getClass("XYNoteModule.NoteDirectionView"),
           XYNoteImageView = objc_getClass("XYNoteModule.NoteImageView"),
+          XYImageSaveService = objc_getClass("XYNoteModule.ImageSaveService"),
+          XYCommentMediaSaveService = objc_getClass("XYNoteModule.CommentMediaSaveService"),
           XYVFHeadView = objc_getClass("XYOldNoteModule.VFHeadView"),
           XYVFBottomEngageView = objc_getClass("XYOldNoteModule.VFBottomEngageView"));
 }

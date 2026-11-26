@@ -47,9 +47,7 @@
 + (void)attachVisibleList;
 + (void)stripBarBackground:(XYMHomeNaviBar *)bar;
 + (void)layoutHomeBar:(XYMHomeNaviBar *)bar;
-+ (void)renameSegmentChannels:(UIView *)segment;
-+ (void)hideSegmentLine:(UIView *)segment;
-+ (void)hideSegmentLineForScrollView:(UIScrollView *)scroll;
++ (void)customizeChannels:(UIView *)segment;
 + (NSArray *)visibleChannels:(NSArray *)children;
 + (NSUInteger)landingChannel:(NSUInteger)page ofHome:(XYMHomeViewController *)home;
 + (NSString *)leftEntranceType:(NSString *)type;
@@ -74,8 +72,10 @@
 + (NSString *)entryIdentity;
 + (id)entryOption;
 + (NSArray *)settingsRows;
-+ (NSArray *)orderRows;
-+ (NSArray *)channelOrderRows;
++ (NSArray *)rowsForMode:(NSString *)mode;
++ (BOOL)isOrderMode:(NSString *)mode;
++ (NSArray *)orderRowsForMode:(NSString *)mode;
++ (void)moveOrderInMode:(NSString *)mode from:(NSUInteger)from to:(NSUInteger)to;
 + (NSArray *)percentRowsForBar:(NSString *)bar;
 + (NSString *)titleForMode:(NSString *)mode;
 + (UIView *)settingsFooterWithWidth:(CGFloat)width;

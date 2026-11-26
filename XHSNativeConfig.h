@@ -14,14 +14,14 @@
 // 开关，默认都是开的
 extern NSString *const kXHSNativeSearchTab;     // 右侧的搜索
 extern NSString *const kXHSNativeSwapPublish;   // 交换搜索与发布：发布去底栏右侧，搜索回到首页顶栏，默认关
+extern NSString *const kXHSNativeTabTitles;     // 底栏图标下显示文字，默认关
+extern NSString *const kXHSNativeHideChannelLine; // 隐藏首页频道下面的红线，默认关
+extern NSString *const kXHSNativeMeTitle;       // 底栏「我」显示为「我的」（fork 保留，上游未收）
 extern NSString *const kXHSNativeDoubleTapZoom; // 双击笔记图片放大，不点赞，默认关
 extern NSString *const kXHSNativeMinimize;      // 滚动时收起底栏
 extern NSString *const kXHSNativeDisableDots;   // 禁用点点 AI，默认关
-extern NSString *const kXHSNativeTabTitles;     // 底栏图标下显示文字（fork 追加）
-extern NSString *const kXHSNativeCityRename;    // 顶栏城市频道统一显示「同城」（fork 追加）
-extern NSString *const kXHSNativeHideSegLine;   // 隐藏顶栏频道下面的红线（fork 追加）
-extern NSString *const kXHSNativeDiscoverRename; // 顶栏「发现」显示为「推荐」（fork 追加）
-extern NSString *const kXHSNativeMeTitle;       // 底栏「我」显示为「我的」（fork 追加）
+extern NSString *const kXHSNativeNoWatermark;   // 无水印保存，默认关
+extern NSString *const kXHSNativeIgnoreNoSave;  // 解除保存限制：作者关闭保存的笔记也能保存，默认关
 extern NSString *const kXHSNativeGlassNote;
 extern NSString *const kXHSNativeGlassSearch;
 extern NSString *const kXHSNativeGlassComments;
@@ -61,19 +61,26 @@ extern NSString *const kXHSNativeBarProfile;
 
 - (BOOL)boolForKey:(NSString *)key;
 - (BOOL)isDotsDisabled;
+- (BOOL)isNoWatermarkEnabled;
+- (BOOL)isSaveRestrictionIgnored;
 - (BOOL)isPublishSwapped;
+- (BOOL)isTabTitleShown;
+- (BOOL)isChannelLineHidden;
 - (BOOL)isDoubleTapZoomEnabled;
 - (void)setBool:(BOOL)value forKey:(NSString *)key;
 
 - (NSArray<NSString *> *)tabOrder;
 - (void)setTabOrder:(NSArray<NSString *> *)order;
-- (NSArray<NSNumber *> *)channelOrder;
-- (void)setChannelOrder:(NSArray<NSNumber *> *)order;
 - (BOOL)isTabHidden:(NSString *)name;
 - (void)setTab:(NSString *)name hidden:(BOOL)hidden;
 
 // 首页顶栏的频道，按小红书的 childVCPageName：0 关注 1 发现 2 同城
 - (BOOL)isChannelHidden:(NSUInteger)page;
+// 频道的自定义名称，没改过是 nil
+- (NSString *)nameForChannel:(NSUInteger)page;
+- (void)setName:(NSString *)name forChannel:(NSUInteger)page;
+- (NSArray<NSNumber *> *)channelOrder;
+- (void)setChannelOrder:(NSArray<NSNumber *> *)order;
 - (void)setChannel:(NSUInteger)page hidden:(BOOL)hidden;
 
 // 0 是纯玻璃，100 不透

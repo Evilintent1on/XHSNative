@@ -44,7 +44,10 @@
 - (UIImageView *)background;
 @end
 
+// 小红书通用的分段控件，首页顶栏的「关注 发现 同城」也是它
 @interface XYSegmentControl : UIView
+- (void)setTitles:(NSArray *)titles;
+- (void)setSelectionIndicatorHidden:(BOOL)hidden;
 @end
 
 @interface XYMHomeLayoutAdapter : NSObject
@@ -156,6 +159,39 @@
 @end
 
 @interface XYNoteDetailExpManager : NSObject
+@end
+
+// 笔记的保存配置：作者是否关闭保存、保存时是否不加水印
+@interface XYPHMediaSaveConfig : NSObject
+@property (nonatomic, assign) BOOL disableSave;
+@property (nonatomic, assign) BOOL disableWatermark;
+@end
+
+@interface XYPHBaseNote : NSObject
+@end
+
+@interface XYVFVideoDownloaderManager : NSObject
+@end
+
+// 笔记的功能开关，image_download、video_download 不可用时保存按钮置灰，提示作者关闭了下载
+@interface XYPHFunctionSwitchInfo : NSObject
+@end
+
+@interface XYPHNoteComment : NSObject
+@end
+
+// 评论图片的保存
+@interface XYImageCommentManager : NSObject
+- (void)showResultWithIsSuccess:(BOOL)success;
+@end
+
+// 评论视频、实况的保存（XYNoteModule.CommentMediaSaveService）
+@interface XYCommentMediaSaveService : NSObject
+@end
+
+// 笔记图片、实况的保存（XYNoteModule.ImageSaveService）
+@interface XYImageSaveService : NSObject
+- (void)saveLivePhotoWatermarkWithLivePhotoVideoURL:(NSString *)videoURL imageInfo:(id)imageInfo userId:(NSString *)userId disableWatermark:(BOOL)disableWatermark startTime:(double)startTime;
 @end
 
 @interface XYVFHeadView : UIView
