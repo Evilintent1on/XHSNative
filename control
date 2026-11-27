@@ -1,6 +1,6 @@
 Package: com.evilintent1on.xhsnative
 Name: XHSNative
-Version: 1.5
+Version: 1.7
 Architecture: iphoneos-arm64
 Description: XHSNative（fork）：小红书液态玻璃 + 底栏文字 + 城市显示同城
 Maintainer: Evilintent1on
