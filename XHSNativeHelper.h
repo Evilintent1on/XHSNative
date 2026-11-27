@@ -13,10 +13,11 @@
 #pragma mark - 视图
 
 // 垫在一组现有控件后面的胶囊形玻璃，控件本身不动。frame 传空矩形表示收起
-+ (UIVisualEffectView *)plateOn:(UIView *)owner key:(const void *)key below:(UIView *)below frame:(CGRect)frame bar:(NSString *)bar;
++ (UIView *)plateOn:(UIView *)owner key:(const void *)key below:(UIView *)below frame:(CGRect)frame bar:(NSString *)bar;
 + (void)clearBackground:(UIView *)view;
 + (BOOL)isVisible:(UIView *)view;
 + (UIView *)subviewOf:(UIView *)view named:(NSString *)className;
++ (UIViewController *)viewControllerOf:(UIView *)view;  // 视图所在的页面
 
 #pragma mark - 小红书
 
@@ -36,7 +37,9 @@
 + (void)rebuildTabs;
 + (void)openPublish;
 + (void)openSearch;
-+ (void)reselectTab:(UITab *)tab;
++ (void)openSettings;
++ (void)reselectPage:(UIViewController *)tabPage;
++ (BOOL)hasRebuiltTabs;
 
 #pragma mark - 首页顶栏
 
@@ -45,6 +48,7 @@
 + (void)useSoftTopEdge:(UIScrollView *)list;
 + (void)attachHomeBar:(UIScrollView *)list;
 + (void)attachVisibleList;
++ (void)findListIn:(UIView *)root underBar:(UIView *)bar best:(UIScrollView **)best;
 + (void)stripBarBackground:(XYMHomeNaviBar *)bar;
 + (void)layoutHomeBar:(XYMHomeNaviBar *)bar;
 + (void)customizeChannels:(UIView *)segment;
@@ -82,6 +86,10 @@
 + (void)handleTap:(NSString *)identity onPage:(XHSNativeSettingsPage *)page;
 + (void)handleSwitch:(NSString *)identity on:(BOOL)on;
 + (void)applySettings;
+
+#pragma mark - 系统版本
+
++ (BOOL)supportsGlass;
 
 #pragma mark - iOS 27.1 以下
 
